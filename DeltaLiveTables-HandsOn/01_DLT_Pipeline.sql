@@ -44,7 +44,7 @@ COMMENT 'Silver table for airlines ETL, Z-Ordered and enriched'
 TBLPROPERTIES (pipelines.autoOptimize.zOrderCols = 'Date')
 AS 
 SELECT 
-   ActualElapsedTime
+  ActualElapsedTime
   ,ArrDelay::INT
   ,ArrTime 
   ,CRSArrTime 
@@ -86,8 +86,19 @@ LEFT JOIN LIVE.airline_codes airlines
 
 -- COMMAND ----------
 
+CREATE LIVE TABLE gold_airline_features_table
+(CONSTRAINT null_delays EXPECT (ArrDelay IS NOT NULL) ON VIOLATION DROP ROW)
+TBLPROPERTIES ("quality" = "gold")
+AS
+SELECT
+  ROW_NUMBER() OVER (ORDER BY DepTime,ArrTime,Date, FlightNum) AS flightID 
+  ,*
+FROM LIVE.airline_trips_silver
+
+-- COMMAND ----------
+
 -- DBTITLE 1,Delays summary - SCD Type 1
-CREATE INCREMENTAL LIVE TABLE flight_delays_scd1;
+CREATE STREAMING LIVE TABLE flight_delays_scd1;
 
 APPLY CHANGES INTO LIVE.flight_delays_scd1
 FROM STREAM(LIVE.airline_trips_silver)
