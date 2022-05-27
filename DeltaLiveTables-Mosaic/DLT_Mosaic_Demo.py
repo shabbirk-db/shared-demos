@@ -69,12 +69,15 @@ def SV_neighbourhoods():
 
 # COMMAND ----------
 
-@dlt.table(
+@dlt.view(
   comment="Raw Taxi Dataset for Geospatial calculations"
-  ,table_properties={"quality":"bronze"}
 )
+@dlt.expect_or_drop("valid trip", "dropoff_datetime >= pickup_datetime AND trip_distance >= 0")
+@dlt.expect_or_drop("valid fare", "total_amount >= fare_amount AND total_amount >= 0")
+@dlt.expect_or_drop("VTS vendor only", "vendor_id = 'VTS'")
+
 def BZ_nycTaxiTrips():
-  return spark.readStream.format("delta").load(nyc_taxi_trips_table)
+  return spark.read.format("delta").load(nyc_taxi_trips_table)
 
 # COMMAND ----------
 
@@ -86,7 +89,9 @@ def BZ_nycTaxiTrips():
 )
 def SV_nycTaxiTrips():
   
-  taxi_trip_geometries = (dlt.read_stream("BZ_nycTaxiTrips")
+  taxi_trip_geometries = (dlt.read("BZ_nycTaxiTrips")
+                           .withColumn("pickup_geom",st_astext(st_point('pickup_longitude', 'pickup_latitude')))
+                           .withColumn("dropoff_geom",st_astext(st_point('dropoff_longitude', 'dropoff_latitude')))
                            .select("trip_distance"
                                   ,"pickup_datetime"
                                   ,"dropoff_datetime"
@@ -97,7 +102,12 @@ def SV_nycTaxiTrips():
                          )
   return (
                     taxi_trip_geometries
-                        .select("*"
+                        .select("trip_distance"
+                                ,"total_amount"
+                                ,"pickup_datetime"
+                                ,"dropoff_datetime"
+                                ,"pickup_geom"
+                                ,"dropoff_geom"
                                 ,point_index_geom("pickup_geom", lit(int(H3resolution))).alias('pickup_h3')
                                 ,point_index_geom("dropoff_geom", lit(int(H3resolution))).alias('dropoff_h3')
                                 ,st_makeline(array("pickup_geom", "dropoff_geom")).alias('trip_line')
@@ -121,7 +131,7 @@ def GL_spatialJoin():
   pickupJoinCondition = [col('p.mosaic_index.index_id') == col('pickup_h3')]
   dropoffJoinCondition = [col('d.mosaic_index.index_id') == col('dropoff_h3')]
   
-  return (dlt.read_stream("SV_nycTaxiTrips")
+  return (dlt.read("SV_nycTaxiTrips")
              .join(dlt.read("SV_neighbourhoods").alias('p').withColumn("pickup_zone",col("p.properties.zone")),pickupJoinCondition)
              .join(dlt.read("SV_neighbourhoods").alias('d').withColumn("dropoff_zone",col("d.properties.zone")),dropoffJoinCondition)
              .where((col("p.mosaic_index.is_core"))
