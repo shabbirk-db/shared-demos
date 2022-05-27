@@ -40,10 +40,12 @@ def BZ_taxiZone_geojson():
 # COMMAND ----------
 
 @dlt.table(
-  comment="Taxi Zone Neighbourhood definitions: No indexing"
-  ,table_properties={"quality":"silver"}
+  comment="Taxi Zone Neighbourhood definitions: H3 Indexed"
+  ,table_properties={"quality":"silver"
+                    ,"pipelines.autoOptimize.zOrderCols":"mosaic_index"
+                    }
 )
-def SV_neighbourhoods_raw():
+def SV_neighbourhoods():
   
   geojson_explode = dlt.read_stream("BZ_taxiZone_geojson").select("type",explode("features").alias("feature"))
   
@@ -53,29 +55,7 @@ def SV_neighbourhoods_raw():
              .select("type"
                      ,"properties"
                      ,"geometry"
-                   )
-         )
-
-# COMMAND ----------
-
-# display(spark.read.table("shabbir_khanbhai_mosaic_demo.SV_neighbourhoods_raw")
-#              .select("*"
-#                      ,mosaic_explode("geometry", lit(9)).alias("mosaic_index")
-#                    ))
-
-# COMMAND ----------
-
-@dlt.table(
-  comment="Taxi Zone Neighbourhood definitions: H3 Indexed"
-  ,table_properties={"quality":"silver"
-                    ,"pipelines.autoOptimize.zOrderCols":"mosaic_index"
-                    }
-)
-def SV_neighbourhoods():
-  
-  return (dlt.read("SV_neighbourhoods_raw")
-             .select("*"
-                     ,mosaic_explode("geometry", lit(H3resolution)).alias("mosaic_index")
+                     ,mosaic_explode("geometry", lit(int(H3resolution))).alias("mosaic_index")
                    )
          )
 
@@ -85,7 +65,7 @@ def SV_neighbourhoods():
 # MAGIC 
 # MAGIC ### Ingest Taxi Trip Data
 # MAGIC 
-# MAGIC - Infer geometries from longitudes and latitudes
+# MAGIC - Calculate taxi trip pickups and dropoff locations from longitudes and latitudes
 
 # COMMAND ----------
 
@@ -99,38 +79,29 @@ def BZ_nycTaxiTrips():
 # COMMAND ----------
 
 @dlt.table(
-  comment="Geometry accessors enrichment"
-  ,table_properties={"quality":"silver"}
-)
-def SV_nycTaxiTrips():
-  return (dlt.read_stream("BZ_nycTaxiTrips")
-             .select("trip_distance"
-                    ,"pickup_datetime"
-                    ,"dropoff_datetime"
-                    ,st_astext(st_point('pickup_longitude', 'pickup_latitude')).alias('pickup_geom')
-                    ,st_astext(st_point('dropoff_longitude', 'dropoff_latitude')).alias('dropoff_geom') 
-                    ,"total_amount" 
-                    )
-         )
-
-# COMMAND ----------
-
-# neighbourhoods_mosaic_frame = MosaicFrame(dlt.read("neighbourhoods"), "geometry")
-# H3resolution = neighbourhoods_mosaic_frame.get_optimal_resolution(sample_fraction=0.75)
-
-@dlt.table(
-  comment="H3 Conversion and Line"
+  comment="Geometry enrichment, H3 indexing"
   ,table_properties={"quality":"silver"
                     ,"pipelines.autoOptimize.zOrderCols":"['pickup_h3','dropoff_h3']"
                     }
 )
-def SV_nycTaxiTrips_H3():
-  return (dlt.read_stream("SV_nycTaxiTrips")
-             .select("*"
-                    ,point_index_geom("pickup_geom", lit(H3resolution)).alias('pickup_h3')
-                    ,point_index_geom("dropoff_geom", lit(H3resolution)).alias('dropoff_h3')
-                    ,st_makeline(array("pickup_geom", "dropoff_geom")).alias('trip_line')
-                    )
+def SV_nycTaxiTrips():
+  
+  taxi_trip_geometries = (dlt.read_stream("BZ_nycTaxiTrips")
+                           .select("trip_distance"
+                                  ,"pickup_datetime"
+                                  ,"dropoff_datetime"
+                                  ,st_astext(st_point('pickup_longitude', 'pickup_latitude')).alias('pickup_geom')
+                                  ,st_astext(st_point('dropoff_longitude', 'dropoff_latitude')).alias('dropoff_geom') 
+                                  ,"total_amount" 
+                                  )
+                         )
+  return (
+                    taxi_trip_geometries
+                        .select("*"
+                                ,point_index_geom("pickup_geom", lit(int(H3resolution))).alias('pickup_h3')
+                                ,point_index_geom("dropoff_geom", lit(int(H3resolution))).alias('dropoff_h3')
+                                ,st_makeline(array("pickup_geom", "dropoff_geom")).alias('trip_line')
+                                )
          )
 
 # COMMAND ----------
@@ -141,29 +112,29 @@ def SV_nycTaxiTrips_H3():
 
 # COMMAND ----------
 
-# @dlt.table(
-#   comment="Geospatial Taxis Summary Dataset"
-#   ,table_properties={"quality":"gold"}
-# )
-# def GL_spatialJoin(): 
+@dlt.table(
+  comment="Geospatial Taxis Summary Dataset"
+  ,table_properties={"quality":"gold"}
+)
+def GL_spatialJoin(): 
   
-#   pickupJoinCondition = [col('mosaic_index.index_id') == col('pickup_h3')]
-#   dropoffJoinCondition = [col('mosaic_index.index_id') == col('dropoff_h3')]
+  pickupJoinCondition = [col('p.mosaic_index.index_id') == col('pickup_h3')]
+  dropoffJoinCondition = [col('d.mosaic_index.index_id') == col('dropoff_h3')]
   
-#   return (dlt.read_stream("SV_nycTaxiTrips_H3")
-#              .join(dlt.read("SV_neighbourhoods").withColumn("pickup_zone",col("properties.zone")),pickupJoinCondition)
-#              .join(dlt.read("SV_neighbourhoods").withColumn("dropoff_zone",col("properties.zone")),dropoffJoinCondition)
-#              .where(("mosaic_index.is_core")
-#                     | (st_contains("mosaic_index.wkb", "pickup_geom"))
-#                     | (st_contains("mosaic_index.wkb", "dropoff_geom"))
-#                    )
-#              .select("trip_distance"
-#                     ,"pickup_geom"
-#                     ,"dropoff_geom"
-#                     ,"pickup_h3"
-#                     ,"dropoff_h3"
-#                     ,"pickup_zone"
-#                     ,"dropoff_zone"
-#                     ,"trip_line"
-#                     )
-#          )
+  return (dlt.read_stream("SV_nycTaxiTrips")
+             .join(dlt.read("SV_neighbourhoods").alias('p').withColumn("pickup_zone",col("p.properties.zone")),pickupJoinCondition)
+             .join(dlt.read("SV_neighbourhoods").alias('d').withColumn("dropoff_zone",col("d.properties.zone")),dropoffJoinCondition)
+             .where((col("p.mosaic_index.is_core"))
+                    | (st_contains(col("p.mosaic_index.wkb"), col("pickup_geom")))
+                    | (st_contains(col("d.mosaic_index.wkb"), col("dropoff_geom")))
+                   )
+             .select("trip_distance"
+                    ,"pickup_geom"
+                    ,"dropoff_geom"
+                    ,"pickup_h3"
+                    ,"dropoff_h3"
+                    ,"pickup_zone"
+                    ,"dropoff_zone"
+                    ,"trip_line"
+                    )
+         )

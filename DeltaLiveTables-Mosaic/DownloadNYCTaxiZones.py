@@ -12,6 +12,8 @@ raw_taxi_zones_path = f"{raw_path}/taxi_zones"
 
 print(f"The raw data will be stored in {raw_path}")
 
+dbutils.fs.rm(raw_path,recurse=True)
+
 # COMMAND ----------
 
 # MAGIC %md
