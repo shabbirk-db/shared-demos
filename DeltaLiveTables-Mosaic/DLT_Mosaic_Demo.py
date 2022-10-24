@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install /dbfs/FileStore/shabbir/mosaic_demo/databricks_mosaic-0.1.1-py3-none-any.whl
+# MAGIC %pip install databricks-mosaic
 
 # COMMAND ----------
 
@@ -24,9 +24,12 @@ H3resolution = spark.conf.get("mypipeline.H3resolution")
 
 # COMMAND ----------
 
+listTest = spark.conf.get("mypipeline.listTest")
+
 @dlt.table(
   comment="Taxi Zone raw data"
-  ,table_properties={"quality":"bronze"}
+  ,table_properties={"quality":"bronze"
+                    }
 )
 def BZ_taxiZone_geojson():
   return (spark.readStream
@@ -49,15 +52,17 @@ def SV_neighbourhoods():
   
   geojson_explode = dlt.read_stream("BZ_taxiZone_geojson").select("type",explode("features").alias("feature"))
   
-  return (geojson_explode
+  H3Index = (geojson_explode
              .withColumn("properties",col("feature.properties"))
-             .withColumn("geometry",st_astext(st_geomfromgeojson(to_json("feature.geometry"))))
+             .withColumn("geometry",st_geomfromgeojson(to_json("feature.geometry")))
              .select("type"
                      ,"properties"
                      ,"geometry"
                      ,mosaic_explode("geometry", lit(int(H3resolution))).alias("mosaic_index")
                    )
-         )
+            )
+  
+  return (H3Index)
 
 # COMMAND ----------
 
@@ -77,7 +82,7 @@ def SV_neighbourhoods():
 @dlt.expect_or_drop("VTS vendor only", "vendor_id = 'VTS'")
 
 def BZ_nycTaxiTrips():
-  return spark.read.format("delta").load(nyc_taxi_trips_table)
+  return spark.readStream.format("delta").load(nyc_taxi_trips_table)
 
 # COMMAND ----------
 
@@ -89,30 +94,29 @@ def BZ_nycTaxiTrips():
 )
 def SV_nycTaxiTrips():
   
-  taxi_trip_geometries = (dlt.read("BZ_nycTaxiTrips")
-                           .withColumn("pickup_geom",st_astext(st_point('pickup_longitude', 'pickup_latitude')))
-                           .withColumn("dropoff_geom",st_astext(st_point('dropoff_longitude', 'dropoff_latitude')))
-                           .select("trip_distance"
-                                  ,"pickup_datetime"
-                                  ,"dropoff_datetime"
-                                  ,st_astext(st_point('pickup_longitude', 'pickup_latitude')).alias('pickup_geom')
-                                  ,st_astext(st_point('dropoff_longitude', 'dropoff_latitude')).alias('dropoff_geom') 
-                                  ,"total_amount" 
-                                  )
+  taxi_trip_geometries = (dlt.read_stream("BZ_nycTaxiTrips")
+                           .withColumn("pickup_geom",st_point('pickup_longitude', 'pickup_latitude'))
+                           .withColumn("dropoff_geom",st_point('dropoff_longitude', 'dropoff_latitude'))
+                           .withColumn("pickup_h3", point_index_geom("pickup_geom", lit(int(H3resolution))))
+                           .withColumn("dropoff_h3", point_index_geom("dropoff_geom", lit(int(H3resolution))))
+                           .withColumn("trip_line", st_makeline(array("pickup_geom", "dropoff_geom")))
+                           .withColumn("time_elapsed",expr("timestampdiff(MINUTE,pickup_datetime,dropoff_datetime)"))
+                           .withColumn("monthID",date_format(col('pickup_datetime'), 'yyyyMM'))
+                           .select(
+                               "trip_distance"
+                              ,"total_amount"
+                              ,"monthID"
+                              ,"pickup_datetime"
+                              ,"dropoff_datetime"
+                              ,"time_elapsed"
+                              ,"pickup_geom"
+                              ,"dropoff_geom"
+                              ,"pickup_h3"
+                              ,"dropoff_h3"
+                              ,"trip_line"
+                            )
                          )
-  return (
-                    taxi_trip_geometries
-                        .select("trip_distance"
-                                ,"total_amount"
-                                ,"pickup_datetime"
-                                ,"dropoff_datetime"
-                                ,"pickup_geom"
-                                ,"dropoff_geom"
-                                ,point_index_geom("pickup_geom", lit(int(H3resolution))).alias('pickup_h3')
-                                ,point_index_geom("dropoff_geom", lit(int(H3resolution))).alias('dropoff_h3')
-                                ,st_makeline(array("pickup_geom", "dropoff_geom")).alias('trip_line')
-                                )
-         )
+  return(taxi_trip_geometries)
 
 # COMMAND ----------
 
@@ -123,15 +127,17 @@ def SV_nycTaxiTrips():
 # COMMAND ----------
 
 @dlt.table(
-  comment="Geospatial Taxis Summary Dataset"
-  ,table_properties={"quality":"gold"}
+  comment="Geospatial Taxi Analytics Ready Dataset"
+  ,table_properties={"quality":"silver"
+                     ,"pipelines.autoOptimize.zOrderCols":"['pickup_h3','dropoff_h3']"
+                    }
 )
-def GL_spatialJoin(): 
+def SV_spatialJoin(): 
   
   pickupJoinCondition = [col('p.mosaic_index.index_id') == col('pickup_h3')]
   dropoffJoinCondition = [col('d.mosaic_index.index_id') == col('dropoff_h3')]
   
-  return (dlt.read("SV_nycTaxiTrips")
+  spatialJoin = (dlt.read_stream("SV_nycTaxiTrips")
              .join(dlt.read("SV_neighbourhoods").alias('p').withColumn("pickup_zone",col("p.properties.zone")),pickupJoinCondition)
              .join(dlt.read("SV_neighbourhoods").alias('d').withColumn("dropoff_zone",col("d.properties.zone")),dropoffJoinCondition)
              .where((col("p.mosaic_index.is_core"))
@@ -139,6 +145,11 @@ def GL_spatialJoin():
                     | (st_contains(col("d.mosaic_index.wkb"), col("dropoff_geom")))
                    )
              .select("trip_distance"
+                    ,"total_amount"
+                    ,"monthID"
+                    ,"pickup_datetime"
+                    ,"dropoff_datetime"
+                    ,"time_elapsed" 
                     ,"pickup_geom"
                     ,"dropoff_geom"
                     ,"pickup_h3"
@@ -147,4 +158,55 @@ def GL_spatialJoin():
                     ,"dropoff_zone"
                     ,"trip_line"
                     )
-         )
+                )
+  
+  return (spatialJoin)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC ### Create Gold layer of aggregate views
+
+# COMMAND ----------
+
+@dlt.table(
+  comment="Taxi monthly summary table"
+  ,table_properties={"quality":"gold"
+                     ,"pipelines.autoOptimize.zOrderCols":"monthID"
+                    }
+)
+def GL_pickupZone_monthlySummary():
+  
+  pickup_aggregates = (dlt.read("SV_spatialJoin")
+                          .groupBy("pickup_zone","monthID")
+                          .agg(sum("total_amount").alias("total_taxi_revenue")
+                               ,avg("total_amount").alias("avg_fare")
+                               ,avg("trip_distance").alias("avg_distance")
+                               ,avg("time_elapsed").alias("avg_time_elapsed_mins")
+                               ,max("trip_distance").alias("max_distance")
+                               ,max("time_elapsed").alias("max_time_elapsed_mins")
+                              )
+                      )
+  return(pickup_aggregates)
+
+# COMMAND ----------
+
+@dlt.table(
+  comment="Daily summary table"
+  ,table_properties={"quality":"gold"}
+)
+def GL_dailySummary():
+  
+  daily_aggregates = (dlt.read("SV_spatialJoin")
+                          .withColumn("pickup_date",date_format(col("pickup_datetime"),'yyyy-MM-dd'))
+                          .groupBy("pickup_date")
+                          .agg(sum("total_amount").alias("total_taxi_revenue")
+                               ,avg("total_amount").alias("avg_fare")
+                               ,avg("trip_distance").alias("avg_distance")
+                               ,avg("time_elapsed").alias("avg_time_elapsed_mins")
+                               ,max("trip_distance").alias("max_distance")
+                               ,max("time_elapsed").alias("max_time_elapsed_mins")
+                              )
+                      )
+  return(daily_aggregates)
