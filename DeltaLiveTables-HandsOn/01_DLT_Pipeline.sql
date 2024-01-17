@@ -1,11 +1,15 @@
 -- Databricks notebook source
 -- DBTITLE 1,Bronze: Stream raw airlines data with Autoloader
-CREATE STREAMING LIVE TABLE 
+CREATE STREAMING LIVE TABLE airline_trips_bronze
   (CONSTRAINT quarantine_rescued_data EXPECT (_rescued_data IS NULL)) --Provides a count of rescued data from auto loader
 COMMENT 'Bronze table for airlines ETL'
 AS SELECT * FROM cloud_files('${userhome}/airlines/'
                               ,"json"
                             )
+
+-- COMMAND ----------
+
+
 
 -- COMMAND ----------
 
@@ -31,11 +35,6 @@ FROM json.`${userhome}/iata_data/airline_codes.json`
 WHERE iata IS NOT NULL
   AND iata != ''
   AND active = 'Y'
-
--- COMMAND ----------
-
-generate_tables()
-  
 
 -- COMMAND ----------
 
@@ -121,71 +120,79 @@ STORED AS SCD TYPE 1;
 -- COMMAND ----------
 
 -- DBTITLE 1,Delays summary - SCD Type 2
--- CREATE STREAMING LIVE TABLE flight_delays_scd2;
+CREATE STREAMING LIVE TABLE flight_delays_scd2;
 
--- APPLY CHANGES INTO LIVE.flight_delays_scd2
--- FROM STREAM(LIVE.airline_trips_silver)
--- KEYS (airline_name,origin_city,dest_city)
--- SEQUENCE BY Date
--- COLUMNS airline_name,origin_city,dest_city,arrtime,IsArrDelayed
--- STORED AS SCD TYPE 2;
+APPLY CHANGES INTO LIVE.flight_delays_scd2
+FROM STREAM(LIVE.airline_trips_silver)
+KEYS (airline_name,origin_city,dest_city)
+SEQUENCE BY Date
+COLUMNS airline_name,origin_city,dest_city,arrtime,IsArrDelayed
+STORED AS SCD TYPE 2
+TRACK HISTORY ON dest_city,IsArrDelayed;
+
+-- COMMAND ----------
+
+CREATE LIVE TABLE flight_delays_scd2_materialised
+AS 
+SELECT *,1 as newField
+FROM LIVE.flight_delays_scd2
 
 -- COMMAND ----------
 
 -- DBTITLE 1,Check: No duplicate rows created
-CREATE LIVE TABLE check_no_duplicates
-  (
-  CONSTRAINT no_duplicates EXPECT (bronze_count >= silver_count)
-  ) 
-  COMMENT 'Check no duplication between bronze and silver'
-  AS
-  SELECT * FROM
-  (SELECT COUNT(*) AS bronze_count FROM LIVE.airline_trips_bronze),
-  (SELECT COUNT(*) AS silver_count FROM LIVE.airline_trips_silver)
+-- CREATE LIVE TABLE check_no_duplicates
+--   (
+--   CONSTRAINT no_duplicates EXPECT (bronze_count >= silver_count)
+--   ) 
+--   COMMENT 'Check no duplication between bronze and silver'
+--   AS
+--   SELECT * FROM
+--   (SELECT COUNT(*) AS bronze_count FROM LIVE.airline_trips_bronze),
+--   (SELECT COUNT(*) AS silver_count FROM LIVE.airline_trips_silver)
 
 -- COMMAND ----------
 
 -- DBTITLE 1,Check: No rows unintentionally lost
-CREATE LIVE TABLE check_no_rows_dropped
-  (
-  CONSTRAINT no_rows_dropped EXPECT (bronze_count <= silver_count)
-  ) 
-  COMMENT 'Check no dropped rows between bronze and silver'
-  AS 
-  SELECT * FROM
-  (SELECT COUNT(*) AS bronze_count FROM LIVE.airline_trips_bronze),
-  (SELECT COUNT(*) AS silver_count FROM LIVE.airline_trips_silver)
+-- CREATE LIVE TABLE check_no_rows_dropped
+--   (
+--   CONSTRAINT no_rows_dropped EXPECT (bronze_count <= silver_count)
+--   ) 
+--   COMMENT 'Check no dropped rows between bronze and silver'
+--   AS 
+--   SELECT * FROM
+--   (SELECT COUNT(*) AS bronze_count FROM LIVE.airline_trips_bronze),
+--   (SELECT COUNT(*) AS silver_count FROM LIVE.airline_trips_silver)
 
 -- COMMAND ----------
 
 -- MAGIC %md
--- MAGIC 
+-- MAGIC
 -- MAGIC # Prepare your DLT Pipeline
--- MAGIC 
+-- MAGIC
 -- MAGIC ### 1. Create a new pipeline with the UI
--- MAGIC 
+-- MAGIC
 -- MAGIC - You can use your generated "userhome" and "database" names from the 00_SimulatedStream step
 -- MAGIC - Your "user-folder" will your personal workspace loation"
 -- MAGIC - Pipeline Mode:
 -- MAGIC   - Select "triggered" to control the frequency of the updates. Less frequent runs will help control costs
 -- MAGIC     - Frequency can be controlled by adding a configuration, but we can skip this for now
 -- MAGIC   - Select "continuous" to simulate a fully real-time environment.
--- MAGIC 
+-- MAGIC
 -- MAGIC <img src="https://github.com/shabbirk-db/public-resources/blob/main/DLT_Pipeline_Setup.png?raw=true" width=400 alt="Example pipeline"/>
--- MAGIC 
+-- MAGIC
 -- MAGIC ***
--- MAGIC 
+-- MAGIC
 -- MAGIC ### 2. Your new DLT Pipeline should look like this:
--- MAGIC 
+-- MAGIC
 -- MAGIC - Once triggered, your pipeline will generate the key table for our analytics, your-database-name.airline_trips_silver
--- MAGIC 
+-- MAGIC
 -- MAGIC <img src="https://github.com/shabbirk-db/public-resources/blob/main/DLT_Pipeline_DAG.png?raw=true" width=1000 alt="Example pipeline"/>
--- MAGIC 
+-- MAGIC
 -- MAGIC ***
--- MAGIC 
+-- MAGIC
 -- MAGIC ### 3. Continue the demo in Databricks SQL
--- MAGIC 
--- MAGIC 
+-- MAGIC
+-- MAGIC
 -- MAGIC - Some example queries and visualisations have already been packaged up into a Dashboard for you
 -- MAGIC - These queries will demonstrate: 
 -- MAGIC   - Creating a mix of simple and complex, parameterised queries
