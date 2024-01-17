@@ -16,9 +16,9 @@ H3resolution = spark.conf.get("mypipeline.H3resolution")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 
+# MAGIC
 # MAGIC ### Ingest Taxi Zone Boundary info
-# MAGIC 
+# MAGIC
 # MAGIC - These are geoJSON datasets
 # MAGIC - H3 Mosaic Indices are derived from the table
 
@@ -51,7 +51,7 @@ def BZ_taxiZone_geojson():
 def SV_neighbourhoods():
   
   geojson_explode = dlt.read_stream("BZ_taxiZone_geojson").select("type",explode("features").alias("feature"))
-  
+
   H3Index = (geojson_explode
              .withColumn("properties",col("feature.properties"))
              .withColumn("geometry",st_geomfromgeojson(to_json("feature.geometry")))
@@ -67,9 +67,9 @@ def SV_neighbourhoods():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 
+# MAGIC
 # MAGIC ### Ingest Taxi Trip Data
-# MAGIC 
+# MAGIC
 # MAGIC - Calculate taxi trip pickups and dropoff locations from longitudes and latitudes
 
 # COMMAND ----------
@@ -121,7 +121,7 @@ def SV_nycTaxiTrips():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 
+# MAGIC
 # MAGIC ### Perform spatial join to match the trips to the zones
 
 # COMMAND ----------
@@ -165,7 +165,7 @@ def SV_spatialJoin():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 
+# MAGIC
 # MAGIC ### Create Gold layer of aggregate views
 
 # COMMAND ----------
